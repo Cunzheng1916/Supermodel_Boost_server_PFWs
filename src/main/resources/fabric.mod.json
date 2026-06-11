@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "supermodel_boost_server_pfws",
+  "version": "${version}",
+  "name": "Supermodel Boost - 武器&护甲强化系统",
+  "description": "PFWs出品：纯服务端Fabric模组，提供武器强化台和护甲强化台两种结构，通过发射器配方为武器和护甲添加随机特性。MC26.1.1",
+  "authors": ["PFWs"],
+  "contact": {
+    "homepage": "",
+    "sources": ""
+  },
+  "license": "MIT",
+  "environment": "server",
+  "entrypoints": {
+    "main": ["com.pfws.supermodelboost.SupermodelBoostMod"]
+  },
+  "mixins": ["supermodel_boost.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.19.3",
+    "minecraft": ">=26.1.0 <27",
+    "java": ">=25",
+    "fabric-api": "*"
+  },
+  "suggests": {},
+  "breaks": {}
+}

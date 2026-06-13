@@ -11,6 +11,10 @@ import com.pfws.supermodelboost.weapon.WeaponTraitInstance;
 import com.pfws.supermodelboost.weapon.WeaponTraitNbtHelper;
 import com.pfws.supermodelboost.weapon.WeaponTraitRegistry;
 import com.pfws.supermodelboost.weapon.WeaponTraitRollEngine;
+import com.pfws.supermodelboost.weapon.skill.ActiveSkillInstance;
+import com.pfws.supermodelboost.weapon.skill.ActiveSkillNbtHelper;
+import com.pfws.supermodelboost.weapon.skill.ActiveSkillRegistry;
+import com.pfws.supermodelboost.weapon.skill.SkillRollEngine;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -29,14 +33,16 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.AttachFace;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.*;
 
 /**
- * 结构处理器 - 检测两种强化台结构并处理强化/重置
+ * 结构处理器 - 检测强化台和倾向台结构并处理
  * 
  * 结构一（武器强化台）：两个附魔台夹着发射器，发射器上方有石头/木质按钮
  * 结构二（护甲强化台）：两个铁砧夹着发射器，发射器上方有石头/木质按钮
+ * 结构三（倾向台）：两个信标夹着发射器，发射器上方有石头/木质按钮
  * 
  * @author PFWs
  */
@@ -88,25 +94,47 @@ public final class StructureHandler {
             return InteractionResult.SUCCESS;
         }
 
+        if (type == StructureType.TENDENCY) {
+            if (!ConfigManager.get().enableWeaponForge) return InteractionResult.PASS;
+            BlockEntity be = world.getBlockEntity(dispenserPos);
+            if (!(be instanceof DispenserBlockEntity dispenser)) return InteractionResult.PASS;
+            processTendencyAltar(player, dispenser, world, dispenserPos);
+            return InteractionResult.SUCCESS;
+        }
+
         return InteractionResult.PASS;
     }
 
     /**
-     * 根据按钮附着面找到发射器位置
+     * 根据按钮找到发射器位置 - 先按精准方向，失败后全方位搜索
      */
     private static BlockPos findAttachedDispenser(Level world, BlockPos buttonPos, BlockState buttonState) {
+        // 精准匹配：按钮附着面的方向
         Direction facing = buttonState.getValue(BlockStateProperties.HORIZONTAL_FACING);
         AttachFace attachFace = buttonState.getValue(BlockStateProperties.ATTACH_FACE);
 
-        BlockPos dispenserPos = null;
-        if (attachFace == AttachFace.FLOOR) {
-            dispenserPos = buttonPos.below();
-        } else if (attachFace == AttachFace.CEILING) {
-            dispenserPos = buttonPos.above();
-        } else {
-            dispenserPos = buttonPos.relative(facing.getOpposite());
+        BlockPos primary = switch (attachFace) {
+            case FLOOR -> buttonPos.below();
+            case CEILING -> buttonPos.above();
+            case WALL -> buttonPos.relative(facing.getOpposite());
+        };
+
+        // 精准匹配成功
+        BlockState primaryState = world.getBlockState(primary);
+        if (primaryState.getBlock() instanceof DispenserBlock && primaryState.getValue(DispenserBlock.FACING) == Direction.UP) {
+            return primary;
         }
-        return dispenserPos;
+
+        // 全方位fallback搜索：按钮周围6个面，找朝上的发射器
+        for (Direction dir : Direction.values()) {
+            BlockPos neighbor = buttonPos.relative(dir);
+            BlockState neighborState = world.getBlockState(neighbor);
+            if (neighborState.getBlock() instanceof DispenserBlock && neighborState.getValue(DispenserBlock.FACING) == Direction.UP) {
+                return neighbor;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -121,6 +149,11 @@ public final class StructureHandler {
         // 结构二检查：两侧铁砧（含开裂和损坏的铁砧）
         if (checkHorizontalPairAnvil(world, dispenserPos)) {
             return StructureType.ARMOR;
+        }
+
+        // 结构三检查：两侧信标
+        if (checkHorizontalPair(world, dispenserPos, Blocks.BEACON)) {
+            return StructureType.TENDENCY;
         }
 
         return StructureType.NONE;
@@ -170,6 +203,143 @@ public final class StructureHandler {
         if (!state.is(Blocks.DISPENSER)) return false;
         if (state.getValue(DispenserBlock.FACING) != Direction.UP) return false;
         return detectStructureType(world, dispenserPos) == StructureType.ARMOR;
+    }
+
+    /**
+     * 判断是否为倾向台合法结构
+     */
+    public static boolean isValidTendencyStructure(Level world, BlockPos dispenserPos) {
+        BlockState state = world.getBlockState(dispenserPos);
+        if (!state.is(Blocks.DISPENSER)) return false;
+        if (state.getValue(DispenserBlock.FACING) != Direction.UP) return false;
+        return detectStructureType(world, dispenserPos) == StructureType.TENDENCY;
+    }
+
+    // ========== 倾向台处理 ==========
+
+    /**
+     * 处理倾向台 - 消耗材料给武器赋予倾向（不立即赋予技能）
+     * 技能在奇器零转积累1000XP后觉醒时，倾向提供80%权重
+     */
+    private static void processTendencyAltar(Player player, DispenserBlockEntity dispenser, Level world, BlockPos pos) {
+        ItemStack centerItem = dispenser.getItem(CENTER_SLOT);
+        if (centerItem.isEmpty()) {
+            sendMessage(player, "§c✘ 发射器中心没有物品！");
+            return;
+        }
+
+        String itemId = BuiltInRegistries.ITEM.getKey(centerItem.getItem()).toString();
+        if (!ConfigManager.matchesItemPattern(itemId, ConfigManager.get().weapon.applicableItems)) {
+            sendMessage(player, "§c✘ 中心物品不适用武器倾向系统！请放入武器");
+            return;
+        }
+
+        // 仅五转/奇器零转(未觉醒)可设置倾向
+        int enhanceLevel = com.pfws.supermodelboost.weapon.WeaponTraitNbtHelper.getEnhanceLevel(centerItem);
+        if (enhanceLevel < 5) {
+            sendMessage(player, "§c✘ 武器需达到五转/奇器零转后才能设置倾向！");
+            return;
+        }
+        if (ActiveSkillNbtHelper.hasSkill(centerItem)) {
+            sendMessage(player, "§c✘ 武器已觉醒技能，无法再更改倾向！");
+            return;
+        }
+
+        // 检测8个格子中的倾向材料
+        String tendency = detectTendencyMaterial(dispenser);
+        if (tendency == null) {
+            sendMessage(player, "§c✘ 配方不正确！上下左右和四角需要放入倾向材料（腐肉=暴戾，骨粉=丰饶，生牛肉=血使）");
+            return;
+        }
+
+        ItemStack result = centerItem.copy();
+
+        // 只设置倾向，不赋予技能
+        String oldTendency = ActiveSkillNbtHelper.getTendency(result);
+        ActiveSkillNbtHelper.setTendency(result, tendency);
+        LoreUpdateHelper.updateAllLore(result);
+
+        // 消耗所有8个外围材料
+        for (int slot : CARDINAL_SLOTS) dispenser.getItem(slot).shrink(1);
+        for (int slot : CORNER_SLOTS) dispenser.getItem(slot).shrink(1);
+        dispenser.setItem(CENTER_SLOT, result);
+        dispenser.setChanged();
+
+        String tendencyName = getTendencyDisplayName(tendency);
+        sendMessage(player, "§a✔ 倾向注入成功！§6" + tendencyName
+                + " §7（觉醒时将80%%概率获得此倾向技能）");
+        SupermodelBoostMod.LOGGER.info("Player {} 设置武器倾向: {} (旧={} → 新={})",
+                player.getName().getString(),
+                BuiltInRegistries.ITEM.getKey(result.getItem()).toString(),
+                oldTendency, tendency);
+    }
+
+    /**
+     * 检测8个格子中的倾向材料，返回倾向family字符串
+     * 腐肉→暴戾(violent)，骨粉→丰饶(abundance)，生牛肉→血使(blood)
+     */
+    private static String detectTendencyMaterial(DispenserBlockEntity dispenser) {
+        Map<String, Integer> counts = new HashMap<>();
+        counts.put(ActiveSkillRegistry.VIOLENT, 0);
+        counts.put(ActiveSkillRegistry.ABUNDANCE, 0);
+        counts.put(ActiveSkillRegistry.BLOOD, 0);
+
+        int totalSlots = CARDINAL_SLOTS.length + CORNER_SLOTS.length;
+        int[] allSlots = new int[totalSlots];
+        System.arraycopy(CARDINAL_SLOTS, 0, allSlots, 0, CARDINAL_SLOTS.length);
+        System.arraycopy(CORNER_SLOTS, 0, allSlots, CARDINAL_SLOTS.length, CORNER_SLOTS.length);
+
+        for (int slot : allSlots) {
+            ItemStack stack = dispenser.getItem(slot);
+            if (stack.isEmpty()) return null; // 所有格子必须有物品
+            String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+            if (id.contains("rotten_flesh")) {
+                counts.merge(ActiveSkillRegistry.VIOLENT, 1, Integer::sum);
+            } else if (id.contains("bone_meal")) {
+                counts.merge(ActiveSkillRegistry.ABUNDANCE, 1, Integer::sum);
+            } else if (id.contains("beef") && !id.contains("cooked")) {
+                counts.merge(ActiveSkillRegistry.BLOOD, 1, Integer::sum);
+            } else {
+                return null; // 未知材料
+            }
+        }
+
+        // 返回数量最多的倾向
+        return counts.entrySet().stream()
+                .max(Map.Entry.comparingByValue())
+                .filter(e -> e.getValue() > 0)
+                .map(Map.Entry::getKey)
+                .orElse(null);
+    }
+
+    private static String getTendencyDisplayName(String tendency) {
+        return switch (tendency) {
+            case ActiveSkillRegistry.VIOLENT -> "§c暴戾";
+            case ActiveSkillRegistry.ABUNDANCE -> "§a丰饶";
+            case ActiveSkillRegistry.BLOOD -> "§4血使";
+            default -> tendency;
+        };
+    }
+
+    /**
+     * 武器强化满级时进入奇器零转（解锁技能槽，不立即赋予技能）
+     */
+    private static void tryAwakenSkillOnMaxLevel(Player player, ItemStack weapon) {
+        int currentLevel = WeaponTraitNbtHelper.getEnhanceLevel(weapon);
+        int maxLevel = ConfigManager.get().weapon.maxEnhanceLevel;
+
+        if (currentLevel < maxLevel) return;
+        if (ActiveSkillNbtHelper.hasSkill(weapon)) return;
+        if (ActiveSkillNbtHelper.getSkillXp(weapon) > 0) return; // 已进入奇器零转状态
+
+        // 初始化奇器零转：XP=0，无技能，解锁技能槽
+        ActiveSkillNbtHelper.setSkillXp(weapon, 0);
+        ActiveSkillNbtHelper.setCooldownEnd(weapon, 0);
+
+        sendMessage(player, "§d✦ 武器进阶奇器零转！§7技能槽已解锁，击杀怪物积累经验觉醒技能");
+        SupermodelBoostMod.LOGGER.info("Player {} 武器进阶奇器零转: {}",
+                player.getName().getString(),
+                BuiltInRegistries.ITEM.getKey(weapon.getItem()).toString());
     }
 
     // ========== 武器强化处理 ==========
@@ -241,6 +411,7 @@ public final class StructureHandler {
         if (!newTraits.isEmpty()) {
             WeaponTraitNbtHelper.setTraits(result, newTraits);
         }
+        LoreUpdateHelper.updateAllLore(result);
 
         dispenser.setItem(CENTER_SLOT, result);
         for (int slot : CARDINAL_SLOTS) dispenser.getItem(slot).shrink(1);
@@ -284,6 +455,8 @@ public final class StructureHandler {
             WeaponTraitNbtHelper.incrementEnhanceLevel(result);
 
             consumeEnhanceMaterials(dispenser, result);
+            tryAwakenSkillOnMaxLevel(player, result);
+            LoreUpdateHelper.updateAllLore(result);
             sendMessage(player, "§a✔ 强化成功！§6" + WeaponTraitRegistry.getDisplayName(up.getId())
                     + " §7升级至 §bLv." + up.getLevel()
                     + " §7强化等级: " + WeaponTraitNbtHelper.getEnhanceLevelColor(WeaponTraitNbtHelper.getEnhanceLevel(result))
@@ -307,6 +480,8 @@ public final class StructureHandler {
             WeaponTraitNbtHelper.incrementEnhanceLevel(result);
 
             consumeEnhanceMaterials(dispenser, result);
+            tryAwakenSkillOnMaxLevel(player, result);
+            LoreUpdateHelper.updateAllLore(result);
             sendMessage(player, "§a✔ 强化成功！获得新特性 §6" + WeaponTraitRegistry.getDisplayName(newTrait.getId())
                     + " §bLv." + newTrait.getLevel()
                     + " §7强化等级: " + WeaponTraitNbtHelper.getEnhanceLevelColor(WeaponTraitNbtHelper.getEnhanceLevel(result))
@@ -535,7 +710,8 @@ public final class StructureHandler {
      */
     enum StructureType {
         NONE,
-        WEAPON,  // 附魔台+发射器+附魔台 + 按钮
-        ARMOR    // 铁砧+发射器+铁砧 + 按钮
+        WEAPON,   // 附魔台+发射器+附魔台 + 按钮
+        ARMOR,    // 铁砧+发射器+铁砧 + 按钮
+        TENDENCY  // 信标+发射器+信标 + 按钮（初级倾向台）
     }
 }

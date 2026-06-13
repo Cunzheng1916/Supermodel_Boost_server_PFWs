@@ -8,6 +8,7 @@ import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.pfws.supermodelboost.armor.*;
 import com.pfws.supermodelboost.config.ConfigManager;
 import com.pfws.supermodelboost.weapon.*;
+import com.pfws.supermodelboost.weapon.skill.*;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.arguments.EntityArgument;
@@ -94,6 +95,37 @@ public final class CommandHandler {
                             .then(Commands.argument("level", IntegerArgumentType.integer(0, 5))
                                 .executes(CommandHandler::weaponSetEnhance)
                             )))
+                    // ---- 技能子命令 ----
+                    .then(Commands.literal("skill")
+                        .then(Commands.literal("info")
+                            .executes(CommandHandler::skillInfo))
+                        .then(Commands.literal("settendency")
+                            .then(Commands.argument("target", EntityArgument.player())
+                                .then(Commands.argument("tendency", StringArgumentType.word())
+                                    .suggests((ctx, builder) -> {
+                                        builder.suggest("violent");
+                                        builder.suggest("abundance");
+                                        builder.suggest("blood");
+                                        builder.suggest("none");
+                                        return builder.buildFuture();
+                                    })
+                                    .executes(CommandHandler::skillSetTendency)
+                                )))
+                        .then(Commands.literal("setlevel")
+                            .then(Commands.argument("target", EntityArgument.player())
+                                .then(Commands.argument("level", IntegerArgumentType.integer(1, 5))
+                                    .executes(CommandHandler::skillSetLevel)
+                                )))
+                        .then(Commands.literal("setxp")
+                            .then(Commands.argument("target", EntityArgument.player())
+                                .then(Commands.argument("xp", IntegerArgumentType.integer(0))
+                                    .executes(CommandHandler::skillSetXp)
+                                )))
+                        .then(Commands.literal("clear")
+                            .then(Commands.argument("target", EntityArgument.player())
+                                .executes(CommandHandler::skillClear)
+                            ))
+                    )
                 )
                 // ---- 护甲子命令 ----
                 .then(Commands.literal("armor")
@@ -257,6 +289,7 @@ public final class CommandHandler {
         }
 
         WeaponTraitNbtHelper.addTrait(mainHand, new WeaponTraitInstance(traitId, level));
+        LoreUpdateHelper.updateAllLore(mainHand);
         send(ctx, "§a✔ 已给 " + target.getName().getString() + " 的武器添加 "
                 + data.get().getDisplayName() + " Lv." + level);
         return 1;
@@ -268,6 +301,7 @@ public final class CommandHandler {
 
         ItemStack mainHand = target.getMainHandItem();
         WeaponTraitNbtHelper.removeTrait(mainHand, traitId);
+        LoreUpdateHelper.updateAllLore(mainHand);
 
         send(ctx, "§a✔ 已移除特性: " + traitId);
         return 1;
@@ -278,6 +312,7 @@ public final class CommandHandler {
         ItemStack mainHand = target.getMainHandItem();
         WeaponTraitNbtHelper.clearTraits(mainHand);
         WeaponTraitNbtHelper.setEnhanceLevel(mainHand, 0);
+        LoreUpdateHelper.updateAllLore(mainHand);
 
         send(ctx, "§a✔ 已清除所有武器特性");
         return 1;
@@ -290,6 +325,7 @@ public final class CommandHandler {
 
         ItemStack mainHand = target.getMainHandItem();
         WeaponTraitNbtHelper.setTraitLevel(mainHand, traitId, level);
+        LoreUpdateHelper.updateAllLore(mainHand);
 
         send(ctx, "§a✔ 已设置 " + traitId + " 等级为 " + level);
         return 1;
@@ -301,6 +337,7 @@ public final class CommandHandler {
 
         ItemStack mainHand = target.getMainHandItem();
         WeaponTraitNbtHelper.setEnhanceLevel(mainHand, level);
+        LoreUpdateHelper.updateAllLore(mainHand);
 
         String displayName = WeaponTraitNbtHelper.getEnhanceLevelDisplayName(level);
         send(ctx, "§a✔ 已设置强化等级为 " + displayName);
@@ -454,6 +491,149 @@ public final class CommandHandler {
         ConfigManager.reload();
         send(ctx, "§a✔ 配置已重载！");
         SupermodelBoostMod.LOGGER.info("配置通过 /sboost reload 重载");
+        return 1;
+    }
+
+    // ========== 技能命令实现 ==========
+
+    private static int skillInfo(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        ServerPlayer player = ctx.getSource().getPlayerOrException();
+        ItemStack mainHand = player.getMainHandItem();
+        if (mainHand.isEmpty()) {
+            send(ctx, "§c你手上没有物品！");
+            return 0;
+        }
+
+        if (!ActiveSkillNbtHelper.hasSkill(mainHand)) {
+            send(ctx, "§7该武器没有技能");
+            int xp = ActiveSkillNbtHelper.getSkillXp(mainHand);
+            int enhance = WeaponTraitNbtHelper.getEnhanceLevel(mainHand);
+            if (enhance >= 5 && SkillRollEngine.isApplicableWeapon(mainHand)) {
+                int needed = ActiveSkillNbtHelper.getXpForLevel(1);
+                send(ctx, "§e技能XP: " + xp + " / " + needed + " (强化等级≥5，击杀可觉醒)");
+            }
+            return 1;
+        }
+
+        ActiveSkillInstance skill = ActiveSkillNbtHelper.getSkill(mainHand);
+        if (skill == null) { send(ctx, "§c读取技能失败"); return 0; }
+
+        ActiveSkillData data = ActiveSkillRegistry.getById(skill.skillId()).orElse(null);
+        if (data == null) { send(ctx, "§c技能数据不存在"); return 0; }
+
+        StringBuilder sb = new StringBuilder("§6===== 技能信息 =====\n");
+        sb.append("§7武器: §f").append(mainHand.getDisplayName().getString()).append("\n");
+        sb.append("§7技能: §b").append(data.getDisplayName())
+                .append(" §e").append(ActiveSkillNbtHelper.getLevelDisplayNamePublic(skill.getLevel())).append("\n");
+        sb.append("§7描述: §a").append(data.describe(skill.getLevel())).append("\n");
+        sb.append("§7XP: §e").append(ActiveSkillNbtHelper.getSkillXp(mainHand));
+        if (skill.getLevel() >= 5) {
+            sb.append(" §a(已满级)\n");
+        } else {
+            sb.append(" / ").append(ActiveSkillNbtHelper.getXpForLevel(skill.getLevel() + 1)).append("\n");
+        }
+        long cdEnd = ActiveSkillNbtHelper.getCooldownEnd(mainHand);
+        long now = player.level().getGameTime();
+        if (cdEnd > now) {
+            sb.append("§7CD: §c").append((cdEnd - now) / 20).append("秒后可用\n");
+        } else {
+            sb.append("§7CD: §a可用\n");
+        }
+        String tendency = ActiveSkillNbtHelper.getTendency(mainHand);
+        if (tendency != null && !tendency.isEmpty()) {
+            String tName = switch (tendency) {
+                case ActiveSkillRegistry.VIOLENT -> "暴戾";
+                case ActiveSkillRegistry.ABUNDANCE -> "丰饶";
+                case ActiveSkillRegistry.BLOOD -> "血使";
+                default -> tendency;
+            };
+            sb.append("§7倾向: §d").append(tName).append("\n");
+        }
+
+        send(ctx, sb.toString());
+        return 1;
+    }
+
+    private static int skillSetTendency(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        ServerPlayer target = EntityArgument.getPlayer(ctx, "target");
+        String tendency = StringArgumentType.getString(ctx, "tendency");
+
+        ItemStack mainHand = target.getMainHandItem();
+        if (mainHand.isEmpty()) {
+            send(ctx, "§c目标手上没有物品！");
+            return 0;
+        }
+
+        if (!SkillRollEngine.isApplicableWeapon(mainHand)) {
+            send(ctx, "§c该物品不适用技能系统！");
+            return 0;
+        }
+
+        if ("none".equals(tendency)) {
+            ActiveSkillNbtHelper.setTendency(mainHand, null);
+            LoreUpdateHelper.updateAllLore(mainHand);
+            send(ctx, "§a✔ 已清除倾向");
+        } else if (ActiveSkillRegistry.VIOLENT.equals(tendency)
+                || ActiveSkillRegistry.ABUNDANCE.equals(tendency)
+                || ActiveSkillRegistry.BLOOD.equals(tendency)) {
+            ActiveSkillNbtHelper.setTendency(mainHand, tendency);
+            LoreUpdateHelper.updateAllLore(mainHand);
+            String tName = switch (tendency) {
+                case ActiveSkillRegistry.VIOLENT -> "暴戾";
+                case ActiveSkillRegistry.ABUNDANCE -> "丰饶";
+                case ActiveSkillRegistry.BLOOD -> "血使";
+                default -> tendency;
+            };
+            send(ctx, "§a✔ 已设置倾向为 " + tName);
+        } else {
+            send(ctx, "§c未知倾向: " + tendency + " (可选: violent/abundance/blood/none)");
+        }
+        return 1;
+    }
+
+    private static int skillSetLevel(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        ServerPlayer target = EntityArgument.getPlayer(ctx, "target");
+        int level = IntegerArgumentType.getInteger(ctx, "level");
+
+        ItemStack mainHand = target.getMainHandItem();
+        if (!ActiveSkillNbtHelper.hasSkill(mainHand)) {
+            send(ctx, "§c该武器没有技能！");
+            return 0;
+        }
+
+        ActiveSkillInstance skill = ActiveSkillNbtHelper.getSkill(mainHand);
+        if (skill == null) { send(ctx, "§c读取技能失败"); return 0; }
+
+        ActiveSkillNbtHelper.setSkill(mainHand, new ActiveSkillInstance(skill.skillId(), level));
+        LoreUpdateHelper.updateAllLore(mainHand);
+        send(ctx, "§a✔ 已设置技能等级为 " + level);
+        return 1;
+    }
+
+    private static int skillSetXp(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        ServerPlayer target = EntityArgument.getPlayer(ctx, "target");
+        int xp = IntegerArgumentType.getInteger(ctx, "xp");
+
+        ItemStack mainHand = target.getMainHandItem();
+        if (!SkillRollEngine.isApplicableWeapon(mainHand)) {
+            send(ctx, "§c该物品不适用技能系统！");
+            return 0;
+        }
+
+        ActiveSkillNbtHelper.setSkillXp(mainHand, xp);
+        ActiveSkillNbtHelper.tryLevelUp(mainHand);
+        LoreUpdateHelper.updateAllLore(mainHand);
+        send(ctx, "§a✔ 已设置技能XP为 " + xp);
+        return 1;
+    }
+
+    private static int skillClear(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        ServerPlayer target = EntityArgument.getPlayer(ctx, "target");
+
+        ItemStack mainHand = target.getMainHandItem();
+        ActiveSkillNbtHelper.clearSkill(mainHand);
+        LoreUpdateHelper.updateAllLore(mainHand);
+        send(ctx, "§a✔ 已清除所有技能数据");
         return 1;
     }
 

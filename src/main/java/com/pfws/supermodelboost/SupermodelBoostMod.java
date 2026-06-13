@@ -3,6 +3,7 @@ package com.pfws.supermodelboost;
 import com.pfws.supermodelboost.armor.ArmorTraitRegistry;
 import com.pfws.supermodelboost.config.ConfigManager;
 import com.pfws.supermodelboost.weapon.WeaponTraitRegistry;
+import com.pfws.supermodelboost.weapon.skill.ActiveSkillRegistry;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
@@ -48,6 +49,10 @@ public class SupermodelBoostMod implements ModInitializer {
         // 3. 注册护甲特性
         ArmorTraitRegistry.registerAll();
         LOGGER.info("[Armor] 护甲特性注册完成 ({} 种特性)", ArmorTraitRegistry.getAll().size());
+
+        // 3.5. 注册主动技能
+        ActiveSkillRegistry.registerAll();
+        LOGGER.info("[Skill] 主动技能注册完成 ({} 种技能)", ActiveSkillRegistry.getAll().size());
 
         // 4. 注册事件监听
         EventHandler.init();

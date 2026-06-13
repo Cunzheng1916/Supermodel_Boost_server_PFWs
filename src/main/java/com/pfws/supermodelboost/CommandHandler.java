@@ -29,6 +29,13 @@ import java.util.*;
  * /sboost weapon clear <target> - 清除所有特性
  * /sboost weapon setlevel <target> <trait> <level> - 设置特性等级
  * /sboost weapon setenhance <target> <level> - 设置强化等级
+ * /sboost weapon skill info - 查看手持武器技能详情
+ * /sboost weapon skill settendency <target> <t> - 设置倾向
+ * /sboost weapon skill setlevel <target> <level> - 设置技能等级
+ * /sboost weapon skill setxp <target> <xp> - 设置技能经验值
+ * /sboost weapon skill clear <target> - 清除所有技能数据
+ * /sboost weapon skill setskill <target> <skillId> [level] - 设置技能
+ * /sboost weapon skill clearcooldown <target> - 清除技能冷却
  * /sboost armor info - 查看身上护甲特性
  * /sboost armor add <target> <slot> <trait> [level] - 给护甲添加特性
  * /sboost armor remove <target> <slot> <trait> - 移除护甲特性
@@ -124,6 +131,24 @@ public final class CommandHandler {
                         .then(Commands.literal("clear")
                             .then(Commands.argument("target", EntityArgument.player())
                                 .executes(CommandHandler::skillClear)
+                            ))
+                        .then(Commands.literal("setskill")
+                            .then(Commands.argument("target", EntityArgument.player())
+                                .then(Commands.argument("skillId", StringArgumentType.word())
+                                    .suggests((ctx, builder) -> {
+                                        for (String id : ActiveSkillRegistry.getAllIds()) {
+                                            builder.suggest(id);
+                                        }
+                                        return builder.buildFuture();
+                                    })
+                                    .then(Commands.argument("level", IntegerArgumentType.integer(1, 5))
+                                        .executes(CommandHandler::skillSetSkillLevel)
+                                    )
+                                    .executes(CommandHandler::skillSetSkill)
+                                )))
+                        .then(Commands.literal("clearcooldown")
+                            .then(Commands.argument("target", EntityArgument.player())
+                                .executes(CommandHandler::skillClearCooldown)
                             ))
                     )
                 )
@@ -634,6 +659,57 @@ public final class CommandHandler {
         ActiveSkillNbtHelper.clearSkill(mainHand);
         LoreUpdateHelper.updateAllLore(mainHand);
         send(ctx, "§a✔ 已清除所有技能数据");
+        return 1;
+    }
+
+    private static int skillSetSkill(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        return skillSetSkillWithLevel(ctx, 1);
+    }
+
+    private static int skillSetSkillLevel(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        int level = IntegerArgumentType.getInteger(ctx, "level");
+        return skillSetSkillWithLevel(ctx, level);
+    }
+
+    private static int skillSetSkillWithLevel(CommandContext<CommandSourceStack> ctx, int level) throws CommandSyntaxException {
+        ServerPlayer target = EntityArgument.getPlayer(ctx, "target");
+        String skillId = StringArgumentType.getString(ctx, "skillId");
+
+        ItemStack mainHand = target.getMainHandItem();
+        if (mainHand.isEmpty()) {
+            send(ctx, "§c目标手上没有物品！");
+            return 0;
+        }
+
+        if (!SkillRollEngine.isApplicableWeapon(mainHand)) {
+            send(ctx, "§c该物品不适用技能系统！");
+            return 0;
+        }
+
+        ActiveSkillData data = ActiveSkillRegistry.getById(skillId).orElse(null);
+        if (data == null) {
+            send(ctx, "§c未知技能ID: " + skillId);
+            return 0;
+        }
+
+        ActiveSkillNbtHelper.setSkill(mainHand, new ActiveSkillInstance(skillId, level));
+        LoreUpdateHelper.updateAllLore(mainHand);
+        send(ctx, "§a✔ 已设置技能为 " + data.getDisplayName()
+                + " §e" + ActiveSkillNbtHelper.getLevelDisplayNamePublic(level));
+        return 1;
+    }
+
+    private static int skillClearCooldown(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        ServerPlayer target = EntityArgument.getPlayer(ctx, "target");
+
+        ItemStack mainHand = target.getMainHandItem();
+        if (!ActiveSkillNbtHelper.hasSkill(mainHand)) {
+            send(ctx, "§c该武器没有技能！");
+            return 0;
+        }
+
+        ActiveSkillNbtHelper.setCooldownEnd(mainHand, 0L);
+        send(ctx, "§a✔ 已清除技能冷却");
         return 1;
     }
 

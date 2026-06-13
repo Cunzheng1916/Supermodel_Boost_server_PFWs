@@ -7,7 +7,7 @@ import net.minecraft.world.item.ItemStack;
 import java.util.*;
 
 /**
- * 技能激活处理器 - 处理双击Shift激活技能的核心逻辑
+ * 技能激活处理器 - 处理快速潜行两下激活技能的核心逻辑
  * 
  * @author PFWs
  */

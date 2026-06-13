@@ -47,7 +47,7 @@ public final class WeaponTraitRegistry {
             2,
             null,
             "受到伤害时储存部分伤害，下次攻击时额外释放",
-            level -> String.format("反弹 %.0f%% 储存伤害", 30 + 20 * level)
+            level -> String.format("反弹 %d%% 储存伤害", 30 + 20 * level)
         ));
 
         // 战狂: 连续攻击加速度
@@ -56,7 +56,7 @@ public final class WeaponTraitRegistry {
             "战狂",
             3,
             null,
-            "攻击时获得短暂力量效果，连续攻击时叠加",
+            "攻击时获得短暂力量效果，连续攻击时叠加力量层数",
             level -> String.format("攻击获得 %d 秒力量 %d", 1 + level, level)
         ));
 
@@ -67,23 +67,23 @@ public final class WeaponTraitRegistry {
             2,
             "durability",
             "大幅减少工具耐久消耗",
-            level -> String.format("耐久损耗降低 %.0f%%", (20 + 15 * level))
+            level -> String.format("耐久损耗降低 %d%%", (20 + 15 * level))
         ));
 
         // 柔韧: 增加最大耐久 (与硬朗互斥)
         addTrait(new WeaponTraitData(
             FLEXIBLE,
-            "柔韧",
+            "韧性",
             2,
             "durability",
             "增加工具最大耐久度",
-            level -> String.format("最大耐久增加 %.0f%%", (10 + 5 * level))
+            level -> String.format("最大耐久增加 %d%%", (10 + 5 * level))
         ));
 
-        // 千手观音: 3x3挖掘/急迫
+        // 千手: 3x3挖掘/急迫
         addTrait(new WeaponTraitData(
             MULTI_TOOL,
-            "千手观音",
+            "千手",
             3,
             null,
             "工具可挖掘相邻方块（镐3x3、铲急迫）",
@@ -96,8 +96,8 @@ public final class WeaponTraitRegistry {
             "兴奋",
             3,
             null,
-            "击杀生物后获得短暂移动速度加成",
-            level -> String.format("击杀后 %d 秒速度 %d", 1 + level, level)
+            "造成伤害后获得短暂移动速度加成",
+            level -> String.format("造成伤害后获得 %d 秒速度 %d", 1 + level, level)
         ));
     }
 
